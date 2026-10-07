@@ -48,6 +48,24 @@
 提示、一格宫色或一支温度计），`EditorState.revalidate()` 立即把结论复位为
 "未检查"，必须重新运行检查。`src/lib/state.test.ts` 覆盖了这一规则。
 
+## 温度计路径变换工具（复制形状，不动原稿）
+
+「路径变换」工具（`thermo-transform`）用于把画好的温度计形状复制到另一片区域再
+调整：选中现有路径后可**按格平移、顺时针旋转 90°（可连按）、水平镜像**。
+
+- 变换以**水银泡（路径首格）为锚点**：旋转/镜像后泡仍在源格，再由整格平移定位，
+  纯函数实现在 `transformPositions()`。
+- 调整阶段只是 `TransformSession` **预览草稿**，画布画出变换后的泡与每一节
+  （合法绿色、问题红色，越界端在棋盘边以红色菱形标出），**不写回 puzzle**。
+- 确认前用 `validateTransformedPositions()` 逐格检查**越界、重复格（自交）、
+  非正交相邻**；任一不过则「确认」按钮禁用，越界预览可直接取消，题面草稿不变。
+- 确认成功后形状作为**一支新的普通温度计**（`{ path }`）追加，**原路径不动**，
+  宫区与提示数字完全不碰；因为题面指纹变化，沿用旧指纹的检查结论立即失效。
+- `src/lib/transform.test.ts` 与 `src/lib/transform-state.test.ts` 覆盖：L 形旋转
+  后逐格相邻、越界预览可取消且草稿不变、确认后数据可随草稿保留（刷新后仍在）、
+  导出仍只有标准温度计数据。
+
+
 ## 导出题面不泄露答案层
 
 - IndexedDB 草稿（`DraftRecord`）保存作者私有数据：题面 + 最近一次检查结论（可能
@@ -87,7 +105,7 @@ node scripts/gen-samples.mjs   # 生成不规则宫、最小化提示，双重 c
 ```bash
 npm install        # 会自动把 z3 的 wasm 产物复制到 public/vendor
 npm run dev        # 开发服务器（已带 COOP/COEP 头）
-npm test           # 21 个单测（含 Z3 对三类样例的判定）
+npm test           # 单测（含 Z3 对三类样例的判定与路径变换工具规则）
 npm run check      # svelte-check 类型检查
 npm run build      # 产出 dist/
 node scripts/serve.mjs dist   # 以 COOP/COEP 头本地预览

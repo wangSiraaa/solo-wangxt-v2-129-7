@@ -5,6 +5,7 @@
   import AnalysisPanel from './components/AnalysisPanel.svelte';
   import DraftsPanel from './components/DraftsPanel.svelte';
   import ExportPanel from './components/ExportPanel.svelte';
+  import TransformPanel from './components/TransformPanel.svelte';
   import { editor } from './lib/state.svelte';
   import { blankPuzzle } from './lib/puzzle';
   import { multipleSample, standardSample, unsatSample } from './lib/samples';
@@ -21,7 +22,44 @@
     if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
     if (e.key >= '1' && e.key <= '9') editor.pressDigit(Number(e.key));
     if (e.key === 'Backspace' || e.key === 'Delete' || e.key === '0') editor.pressDigit(0);
-    if (e.key === 'Enter' && (editor.tool === 'thermo-extend')) editor.finishThermo();
+    if (e.key === 'Enter' && editor.tool === 'thermo-extend') editor.finishThermo();
+    // 路径变换会话的快捷键
+    if (editor.tool === 'thermo-transform' && editor.transformSession) {
+      switch (e.key) {
+        case 'ArrowUp':
+          e.preventDefault();
+          editor.nudgeTransform(-1, 0);
+          break;
+        case 'ArrowDown':
+          e.preventDefault();
+          editor.nudgeTransform(1, 0);
+          break;
+        case 'ArrowLeft':
+          e.preventDefault();
+          editor.nudgeTransform(0, -1);
+          break;
+        case 'ArrowRight':
+          e.preventDefault();
+          editor.nudgeTransform(0, 1);
+          break;
+        case 'r':
+        case 'R':
+          editor.rotateTransform();
+          break;
+        case 'm':
+        case 'M':
+          editor.mirrorTransform();
+          break;
+        case 'Enter':
+          editor.commitTransform();
+          break;
+        case 'Escape':
+          editor.cancelTransform();
+          break;
+      }
+    } else if (e.key === 'Escape' && editor.tool === 'thermo-transform') {
+      editor.selectTool('givens');
+    }
   }
 
   function loadSample(kind: 'standard' | 'unsat' | 'multiple' | 'blank') {
@@ -50,6 +88,9 @@
     </section>
     <aside class="side">
       <Toolbar />
+      {#if editor.tool === 'thermo-transform'}
+        <TransformPanel />
+      {/if}
       <AnalysisPanel />
       <DraftsPanel />
       <ExportPanel />

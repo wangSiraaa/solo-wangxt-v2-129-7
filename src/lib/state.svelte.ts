@@ -1,16 +1,51 @@
 // 全局应用状态（Svelte 5 runes）。
 import {
   clonePuzzle,
+  colOf,
+  pathToPositions,
+  positionsToPath,
   puzzleFingerprint,
+  rowOf,
+  transformPositions,
   validateStructure,
+  validateTransformedPositions,
+  type BoardPos,
+  type CellIndex,
   type Puzzle,
-  type StructuralIssue
+  type StructuralIssue,
+  type Thermometer,
+  type TransformIssue
 } from './puzzle';
 import type { SolveResult } from './solver';
 import { initZ3Api } from './z3-init';
 import type { Z3HighLevel } from 'z3-solver';
 
-export type Tool = 'givens' | 'regions' | 'thermo-start' | 'thermo-extend' | 'erase';
+export type Tool =
+  | 'givens'
+  | 'regions'
+  | 'thermo-start'
+  | 'thermo-extend'
+  | 'thermo-transform'
+  | 'erase';
+
+/**
+ * 温度计路径变换会话。它是**纯预览草稿**：只存在于编辑器状态中，
+ * 确认前不触碰 puzzle（也就不会动宫区/提示，不触发指纹失效）。
+ * 以源温度计的水银泡（源首格）为锚点：dr/dc 表示预览泡相对源泡的整格位移。
+ */
+export interface TransformSession {
+  /** 被复制的源温度计序号（原路径始终保留） */
+  sourceIndex: number;
+  /** 源路径的快照坐标；即使之后画布上的源被改动，预览仍基于开始时的形状 */
+  source: BoardPos[];
+  /** 顺时针 90° 旋转次数 0..3 */
+  rot: number;
+  /** 是否水平镜像（先镜像后旋转） */
+  mirror: boolean;
+  /** 按格平移量 */
+  dr: number;
+  dc: number;
+}
 
 export interface AnalysisState {
   status: 'idle' | 'checking' | 'done';
@@ -27,6 +62,8 @@ export class EditorState {
   selectedRegion = $state<number>(0);
   /** 正在绘制/编辑的温度计序号 */
   activeThermo = $state<number | null>(null);
+  /** 路径变换会话（纯预览，确认前不写回 puzzle） */
+  transformSession = $state<TransformSession | null>(null);
   /** 当前草稿 id；null 表示尚未保存的新稿 */
   draftId = $state<string | null>(null);
   draftName = $state<string>('未命名题稿');
@@ -148,10 +185,112 @@ export class EditorState {
   }
 
   deleteThermo(index: number) {
+    // 正在变换某支温度计却把它删了：变换预览失去源，直接取消（草稿未动）
+    if (this.transformSession?.sourceIndex === index) this.cancelTransform();
     this.#mutate((p) => {
       p.thermometers.splice(index, 1);
     });
     if (this.activeThermo === index) this.activeThermo = null;
+  }
+
+  /** 切换工具：离开变换/绘制工具时收起各自的临时会话，不改动题面 */
+  selectTool(tool: Tool) {
+    if (tool !== 'thermo-transform') this.cancelTransform();
+    if (tool !== 'thermo-extend' && tool !== 'thermo-transform') this.finishThermo();
+    this.tool = tool;
+  }
+
+  // ---- 温度计路径变换（复制形状到另一片区域再调整）---------------------
+
+  /** 开始变换：拍下源路径快照作为预览形状；源路径与题面都不动 */
+  startTransform(sourceIndex: number) {
+    const src = (this.puzzle as Puzzle).thermometers[sourceIndex];
+    if (!src) return;
+    this.activeThermo = sourceIndex;
+    this.transformSession = {
+      sourceIndex,
+      source: pathToPositions(src.path),
+      rot: 0,
+      mirror: false,
+      dr: 0,
+      dc: 0
+    };
+    this.tool = 'thermo-transform';
+  }
+
+  /** 取消变换：仅丢弃预览会话，题面草稿保持进入前的样子 */
+  cancelTransform() {
+    this.transformSession = null;
+  }
+
+  rotateTransform() {
+    const s = this.transformSession;
+    if (s) s.rot = (s.rot + 1) % 4;
+  }
+
+  mirrorTransform() {
+    const s = this.transformSession;
+    if (s) s.mirror = !s.mirror;
+  }
+
+  nudgeTransform(dr: number, dc: number) {
+    const s = this.transformSession;
+    if (!s) return;
+    // 故意不做夹取：允许把预览推出棋盘以观察越界提示，再取消/移回
+    s.dr += dr;
+    s.dc += dc;
+  }
+
+  resetTransform() {
+    const s = this.transformSession;
+    if (!s) return;
+    s.rot = 0;
+    s.mirror = false;
+    s.dr = 0;
+    s.dc = 0;
+  }
+
+  /** 把预览水银泡直接放到某格（点击画布定位） */
+  placeTransformBulb(cell: CellIndex) {
+    const s = this.transformSession;
+    if (!s) return;
+    s.dr = rowOf(cell) - s.source[0].r;
+    s.dc = colOf(cell) - s.source[0].c;
+  }
+
+  /** 当前预览坐标（可能含越界坐标） */
+  transformPreview(): BoardPos[] | null {
+    const s = this.transformSession;
+    if (!s) return null;
+    return transformPositions(s.source, s.rot, s.mirror, s.dr, s.dc);
+  }
+
+  /** 预览逐格检查：越界 / 重复格 / 非正交相邻 */
+  transformIssues(): TransformIssue[] {
+    const pos = this.transformPreview();
+    return pos ? validateTransformedPositions(pos) : [];
+  }
+
+  /**
+   * 确认变换：预览合法时，把形状作为**一支新的普通温度计**追加到题面，
+   * 原路径不动；宫区、提示数字完全不碰，因此沿用题面指纹的旧结论失效。
+   * 返回是否成功（越界/自交/跨步时拒绝写入）。
+   */
+  commitTransform(): boolean {
+    const s = this.transformSession;
+    if (!s) return false;
+    const positions = transformPositions(s.source, s.rot, s.mirror, s.dr, s.dc);
+    const path = positionsToPath(positions);
+    if (!path) return false; // 越界
+    if (validateTransformedPositions(positions).length) return false;
+    const newThermo: Thermometer = { path };
+    this.#mutate((p) => {
+      p.thermometers.push(newThermo);
+    });
+    const newIndex = (this.puzzle as Puzzle).thermometers.length - 1;
+    this.transformSession = null;
+    this.activeThermo = newIndex;
+    return true;
   }
 
   /** 画布点击入口，由当前工具决定行为 */
@@ -171,6 +310,19 @@ export class EditorState {
       case 'thermo-extend':
         this.extendThermo(cell);
         break;
+      case 'thermo-transform': {
+        // 已有会话：点击任意格把预览泡挪过去；
+        // 尚无会话：点击某支温度计覆盖的格，即对该支开始变换
+        if (this.transformSession) {
+          this.placeTransformBulb(cell);
+        } else {
+          const idx = (this.puzzle as Puzzle).thermometers.findIndex((t) =>
+            t.path.includes(cell)
+          );
+          if (idx >= 0) this.startTransform(idx);
+        }
+        break;
+      }
       case 'givens':
       default:
         this.selectedCell = cell;

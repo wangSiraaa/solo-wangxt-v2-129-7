@@ -216,6 +216,132 @@ export function coordLabel(idx: CellIndex): string {
 }
 
 // ---------------------------------------------------------------------------
+// 温度计路径变换（复制现有路径到别处：按格平移 / 旋转 90° / 镜像）
+// 变换是"以水银泡（路径首格）为锚点"的刚体运动：先可选水平镜像，
+// 再按 90° 顺时针旋转，最后按格平移。预览结果是一组"可能越界"的棋盘坐标，
+// 确认前必须通过 validateTransformedPositions 的逐格检查。
+// ---------------------------------------------------------------------------
+
+export interface BoardPos {
+  r: number;
+  c: number;
+}
+
+export type TransformIssueCode =
+  | 'PREVIEW_OUT_OF_BOARD'
+  | 'PREVIEW_REPEATED_CELL'
+  | 'PREVIEW_NON_ADJACENT';
+
+export interface TransformIssue {
+  code: TransformIssueCode;
+  message: string;
+  /** 相关坐标（可能在棋盘外，用于预览提示） */
+  positions: BoardPos[];
+}
+
+export function pathToPositions(path: CellIndex[]): BoardPos[] {
+  return path.map((i) => ({ r: rowOf(i), c: colOf(i) }));
+}
+
+/** 坐标是否落在 9×9 棋盘内（平移预览允许越界，故坐标本身不做夹取） */
+export function isInBoard(pos: BoardPos): boolean {
+  return (
+    Number.isInteger(pos.r) &&
+    Number.isInteger(pos.c) &&
+    pos.r >= 0 &&
+    pos.r < N &&
+    pos.c >= 0 &&
+    pos.c < N
+  );
+}
+
+function posLabel(pos: BoardPos): string {
+  return `R${pos.r + 1}C${pos.c + 1}`;
+}
+
+/**
+ * 以水银泡为锚点的刚体变换。
+ * 镜像/旋转都在"泡位于原点"的相对坐标上进行，因此旋转后泡仍在原格，
+ * 之后由 (dr, dc) 按整格平移到目标区域。
+ */
+export function transformPositions(
+  source: BoardPos[],
+  rot: number,
+  mirror: boolean,
+  dr: number,
+  dc: number
+): BoardPos[] {
+  const turns = ((Math.trunc(rot) % 4) + 4) % 4;
+  const anchor = source[0];
+  return source.map((p) => {
+    // 先把泡移到原点
+    let r = p.r - anchor.r;
+    let c = p.c - anchor.c;
+    if (mirror) c = -c; // 水平镜像（左右翻转）
+    // 屏幕坐标（行向下、列向右）下视觉顺时针 90°：(r, c) -> (c, -r)
+    // 例：泡正下方一格 (r+1,c) 旋转后到泡正左方 (r,c-1)
+    for (let k = 0; k < turns; k++) {
+      const nr = c;
+      const nc = -r;
+      r = nr;
+      c = nc;
+    }
+    // 移回泡的位置后再按格平移
+    return { r: r + anchor.r + dr, c: c + anchor.c + dc };
+  });
+}
+
+/** 全部坐标在棋盘内时转成行优先下标；否则返回 null（越界预览不可落盘） */
+export function positionsToPath(positions: BoardPos[]): CellIndex[] | null {
+  if (!positions.every(isInBoard)) return null;
+  return positions.map((p) => rc(p.r, p.c));
+}
+
+/**
+ * 变换预览的逐格检查：越界、重复格（自交）、非正交相邻。
+ * 刚体变换在数学上不会制造重复/跨步，但确认前仍逐格显式校验，
+ * 与 validateStructure 对普通温度计的规则保持一致。
+ */
+export function validateTransformedPositions(positions: BoardPos[]): TransformIssue[] {
+  const issues: TransformIssue[] = [];
+  const out = positions.filter((p) => !isInBoard(p));
+  if (out.length) {
+    issues.push({
+      code: 'PREVIEW_OUT_OF_BOARD',
+      message: `预览有 ${out.length} 格越出 ${N}×${N} 棋盘（如 ${posLabel(out[0])}），请平移回棋盘内再确认`,
+      positions: out
+    });
+    return issues; // 后续检查依赖合法棋盘坐标
+  }
+  const seen = new Set<string>();
+  const repeated: BoardPos[] = [];
+  for (const p of positions) {
+    const key = `${p.r},${p.c}`;
+    if (seen.has(key)) repeated.push(p);
+    seen.add(key);
+  }
+  if (repeated.length) {
+    issues.push({
+      code: 'PREVIEW_REPEATED_CELL',
+      message: `预览路径自交（格子 ${[...new Set(repeated.map(posLabel))].join('、')} 重复）`,
+      positions: repeated
+    });
+  }
+  for (let s = 1; s < positions.length; s++) {
+    const a = positions[s - 1];
+    const b = positions[s];
+    if (Math.abs(a.r - b.r) + Math.abs(a.c - b.c) !== 1) {
+      issues.push({
+        code: 'PREVIEW_NON_ADJACENT',
+        message: `预览第 ${s} 节（${posLabel(a)} → ${posLabel(b)}）不是上下左右正交相邻`,
+        positions: [a, b]
+      });
+    }
+  }
+  return issues;
+}
+
+// ---------------------------------------------------------------------------
 // 工厂 / 序列化
 // ---------------------------------------------------------------------------
 

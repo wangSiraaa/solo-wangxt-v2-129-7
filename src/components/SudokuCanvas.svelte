@@ -1,6 +1,6 @@
 <script lang="ts">
   import { editor } from '../lib/state.svelte';
-  import { CELL_COUNT, N, colOf, rowOf, type CellIndex } from '../lib/puzzle';
+  import { CELL_COUNT, N, colOf, rowOf, isInBoard, type BoardPos, type CellIndex } from '../lib/puzzle';
 
   let canvas: HTMLCanvasElement;
   const CELL = 56; // CSS 像素/格
@@ -29,6 +29,7 @@
     void editor.puzzle;
     void editor.tool;
     void editor.activeThermo;
+    void editor.transformSession;
     void editor.highlightCells;
     void editor.showSolution;
     void editor.analysis;
@@ -115,6 +116,62 @@
       ctx.fill();
     });
 
+    // 3.5) 路径变换预览（确认前的草稿：合法为绿色，越界/自交/跨步为红色）
+    const preview = editor.transformPreview();
+    if (preview) {
+      const previewIssues = editor.transformIssues();
+      const bad = previewIssues.length > 0;
+      const main = bad ? '#dc2626' : '#16a34a';
+      const core = bad ? '#fca5a5' : '#86efac';
+      const badCells = new Set<number>();
+      previewIssues.forEach((iss) =>
+        iss.positions.forEach((pos) => {
+          if (pos.r >= 0 && pos.r < N && pos.c >= 0 && pos.c < N) badCells.add(pos.r * N + pos.c);
+        })
+      );
+
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(0, 0, SIZE, SIZE);
+      ctx.clip(); // 越界坐标的绘制被裁到画布边缘，表示"伸出棋盘"
+
+      preview.forEach((pos) => {
+        if (pos.r >= 0 && pos.r < N && pos.c >= 0 && pos.c < N) {
+          ctx.fillStyle = badCells.has(pos.r * N + pos.c)
+            ? 'rgba(220, 38, 38, 0.20)'
+            : 'rgba(22, 163, 74, 0.13)';
+          ctx.fillRect(pos.c * CELL, pos.r * CELL, CELL, CELL);
+        }
+      });
+
+      // 外管/内芯：端点允许越界（clip 后只画到边缘）
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.strokeStyle = main;
+      ctx.lineWidth = CELL * 0.36;
+      beginPositionsPath(ctx, preview);
+      ctx.stroke();
+      ctx.strokeStyle = core;
+      ctx.lineWidth = CELL * 0.22;
+      beginPositionsPath(ctx, preview);
+      ctx.stroke();
+
+      // 水银泡在预览首端、小帽在末端；越界时画红色菱形标出伸出方向
+      drawPreviewEnd(ctx, preview[0], CELL * 0.26, main);
+      drawPreviewEnd(ctx, preview[preview.length - 1], CELL * 0.13, main);
+
+      // 重复格红圈
+      badCells.forEach((i) => {
+        const [cx, cy] = center(i);
+        ctx.strokeStyle = '#dc2626';
+        ctx.lineWidth = 2.5;
+        ctx.beginPath();
+        ctx.arc(cx, cy, CELL * 0.4, 0, Math.PI * 2);
+        ctx.stroke();
+      });
+      ctx.restore();
+    }
+
     // 4) 格线
     ctx.strokeStyle = '#9ca3af';
     ctx.lineWidth = 1;
@@ -168,6 +225,34 @@
       const [x, y] = center(path[k]);
       ctx2.lineTo(x, y);
     }
+  }
+
+  // 变换预览版本：坐标允许在棋盘外（配合 ctx.clip 表示越界伸出）
+  function beginPositionsPath(ctx2: CanvasRenderingContext2D, positions: BoardPos[]) {
+    ctx2.beginPath();
+    ctx2.moveTo(positions[0].c * CELL + CELL / 2, positions[0].r * CELL + CELL / 2);
+    for (let k = 1; k < positions.length; k++) {
+      ctx2.lineTo(positions[k].c * CELL + CELL / 2, positions[k].r * CELL + CELL / 2);
+    }
+  }
+
+  // 预览端点：盘内画实心圆（泡/帽），越界画红色菱形提示
+  function drawPreviewEnd(ctx2: CanvasRenderingContext2D, pos: BoardPos, radius: number, color: string) {
+    const x = pos.c * CELL + CELL / 2;
+    const y = pos.r * CELL + CELL / 2;
+    ctx2.beginPath();
+    if (isInBoard(pos)) {
+      ctx2.fillStyle = color;
+      ctx2.arc(x, y, radius, 0, Math.PI * 2);
+    } else {
+      ctx2.fillStyle = '#dc2626';
+      ctx2.moveTo(x, y - radius);
+      ctx2.lineTo(x + radius, y);
+      ctx2.lineTo(x, y + radius);
+      ctx2.lineTo(x - radius, y);
+      ctx2.closePath();
+    }
+    ctx2.fill();
   }
   function line(ctx2: CanvasRenderingContext2D, x1: number, y1: number, x2: number, y2: number) {
     ctx2.beginPath();
