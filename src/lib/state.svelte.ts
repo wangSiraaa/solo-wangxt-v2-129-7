@@ -6,11 +6,28 @@ import {
   type Puzzle,
   type StructuralIssue
 } from './puzzle';
+import {
+  applyOps,
+  cellToRC,
+  rcToCell,
+  validateTransformedPath,
+  type RC,
+  type TransformIssue,
+  type TransformOp
+} from './thermo-transform';
 import type { SolveResult } from './solver';
 import { initZ3Api } from './z3-init';
 import type { Z3HighLevel } from 'z3-solver';
 
-export type Tool = 'givens' | 'regions' | 'thermo-start' | 'thermo-extend' | 'erase';
+export type Tool = 'givens' | 'regions' | 'thermo-start' | 'thermo-extend' | 'thermo-transform' | 'erase';
+
+/** 温度计变换会话：仅存在于内存中的预览，确认前不改动题面 */
+export interface TransformSession {
+  /** 源温度计序号（原路径保持不动） */
+  source: number;
+  /** 已应用的变换序列（按顺序作用于源路径） */
+  ops: TransformOp[];
+}
 
 export interface AnalysisState {
   status: 'idle' | 'checking' | 'done';
@@ -41,6 +58,8 @@ export class EditorState {
   showSolution = $state<boolean>(false);
   /** 当前选中格（givens 工具下由数字键/数字盘写入） */
   selectedCell = $state<number | null>(null);
+  /** 温度计路径变换会话；null 表示不在变换中 */
+  transform = $state<TransformSession | null>(null);
 
   #analyzePuzzle: typeof import('./solver').analyzePuzzle | null = null;
 
@@ -48,6 +67,7 @@ export class EditorState {
     this.puzzle = puzzle;
     this.draftId = draftId;
     this.draftName = name;
+    this.transform = null;
     this.revalidate();
     this.analysis = { status: 'idle', result: null, fingerprint: null, error: null };
   }
@@ -152,6 +172,70 @@ export class EditorState {
       p.thermometers.splice(index, 1);
     });
     if (this.activeThermo === index) this.activeThermo = null;
+    // 温度计序号可能整体前移，变换会话引用的源已不可靠，直接取消
+    this.transform = null;
+  }
+
+  // ------------------------------------------------------------------
+  // 温度计路径变换：选中已有路径 → 平移/旋转/镜像 → 预览 → 确认为新温度计
+  // ------------------------------------------------------------------
+
+  /** 选中一支已有温度计作为变换源（再次点击同一支则保持当前会话） */
+  beginTransform(source: number) {
+    const t = (this.puzzle as Puzzle).thermometers[source];
+    if (!t) return;
+    if (this.transform?.source === source) return;
+    this.transform = { source, ops: [] };
+    this.activeThermo = source; // 画布上以高亮标出源温度计
+  }
+
+  /** 追加一步变换（平移/旋转/镜像），只改预览，不改题面 */
+  applyTransformOp(op: TransformOp) {
+    if (!this.transform) return;
+    this.transform = { source: this.transform.source, ops: [...this.transform.ops, op] };
+  }
+
+  /** 撤销全部变换，回到源路径（会话保留） */
+  resetTransform() {
+    if (!this.transform) return;
+    this.transform = { source: this.transform.source, ops: [] };
+  }
+
+  /** 放弃本次变换：题面（草稿）不发生任何改动 */
+  cancelTransform() {
+    this.transform = null;
+  }
+
+  /** 预览路径（RC 坐标，可能越界；首格仍是水银泡） */
+  transformPreviewPath(): RC[] | null {
+    const session = this.transform;
+    if (!session) return null;
+    const t = (this.puzzle as Puzzle).thermometers[session.source];
+    if (!t) return null;
+    return applyOps(t.path.map(cellToRC), session.ops);
+  }
+
+  /** 确认前检查：越界、重复格、非正交相邻 */
+  transformIssues(): TransformIssue[] {
+    const path = this.transformPreviewPath();
+    if (!path) return [];
+    return validateTransformedPath(path);
+  }
+
+  /**
+   * 确认变换：校验全部通过才把预览路径作为一支新的普通温度计追加到题面。
+   * 原温度计、宫区、提示数字一律不动；题面指纹随 #mutate 失效。
+   */
+  confirmTransform() {
+    const path = this.transformPreviewPath();
+    if (!path) return;
+    if (validateTransformedPath(path).length > 0) return; // 有越界/重复/非相邻，禁止入库
+    const newPath = path.map(rcToCell);
+    this.#mutate((p) => {
+      p.thermometers.push({ path: newPath });
+    });
+    this.activeThermo = (this.puzzle as Puzzle).thermometers.length - 1;
+    this.transform = null;
   }
 
   /** 画布点击入口，由当前工具决定行为 */
@@ -171,6 +255,14 @@ export class EditorState {
       case 'thermo-extend':
         this.extendThermo(cell);
         break;
+      case 'thermo-transform': {
+        // 点击某支温度计经过的格子，即把该温度计选为变换源
+        const idx = (this.puzzle as Puzzle).thermometers.findIndex((t) =>
+          t.path.includes(cell)
+        );
+        if (idx >= 0) this.beginTransform(idx);
+        break;
+      }
       case 'givens':
       default:
         this.selectedCell = cell;

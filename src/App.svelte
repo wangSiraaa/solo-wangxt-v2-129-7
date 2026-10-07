@@ -17,8 +17,24 @@
     return () => window.removeEventListener('keydown', onKey);
   });
 
+  const ARROW_DELTAS: Record<string, [number, number]> = {
+    ArrowUp: [-1, 0],
+    ArrowDown: [1, 0],
+    ArrowLeft: [0, -1],
+    ArrowRight: [0, 1]
+  };
+
   function onKey(e: KeyboardEvent) {
     if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+    // 变换会话中：方向键按格平移预览
+    if (editor.transform) {
+      const dir = ARROW_DELTAS[e.key];
+      if (dir) {
+        e.preventDefault();
+        editor.applyTransformOp({ kind: 'translate', dr: dir[0], dc: dir[1] });
+        return;
+      }
+    }
     if (e.key >= '1' && e.key <= '9') editor.pressDigit(Number(e.key));
     if (e.key === 'Backspace' || e.key === 'Delete' || e.key === '0') editor.pressDigit(0);
     if (e.key === 'Enter' && (editor.tool === 'thermo-extend')) editor.finishThermo();

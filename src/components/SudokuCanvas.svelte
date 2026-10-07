@@ -33,6 +33,7 @@
     void editor.showSolution;
     void editor.analysis;
     void editor.selectedCell;
+    void editor.transform;
     void hover;
     void dpr;
     return 1;
@@ -114,6 +115,48 @@
       ctx.arc(tx, ty, CELL * 0.13, 0, Math.PI * 2);
       ctx.fill();
     });
+
+    // 3.5) 温度计变换预览（虚影：水银泡 + 每一节；越界格画出界外被裁掉）
+    const preview = editor.transformPreviewPath();
+    if (preview && preview.length > 0) {
+      const issues = editor.transformIssues();
+      const bad = issues.length > 0;
+      const color = bad ? '#dc2626' : '#2563eb';
+      // 问题格淡染（仅棋盘内的格；越界格无对应区域）
+      ctx.fillStyle = bad ? 'rgba(220, 38, 38, 0.18)' : 'rgba(37, 99, 235, 0.10)';
+      for (const issue of issues) {
+        for (const cell of issue.cells) {
+          if (cell.r < 0 || cell.r >= N || cell.c < 0 || cell.c >= N) continue;
+          ctx.fillRect(cell.c * CELL, cell.r * CELL, CELL, CELL);
+        }
+      }
+      const pts = preview.map(
+        (cell) => [cell.c * CELL + CELL / 2, cell.r * CELL + CELL / 2] as [number, number]
+      );
+      ctx.save();
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.globalAlpha = 0.85;
+      // 管身（虚线，区别于已入库的温度计）
+      ctx.setLineDash([10, 6]);
+      ctx.strokeStyle = color;
+      ctx.lineWidth = CELL * 0.34;
+      ctx.beginPath();
+      ctx.moveTo(pts[0][0], pts[0][1]);
+      for (let k = 1; k < pts.length; k++) ctx.lineTo(pts[k][0], pts[k][1]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      // 水银泡（首端）与顶端小帽
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.arc(pts[0][0], pts[0][1], CELL * 0.26, 0, Math.PI * 2);
+      ctx.fill();
+      const [tx, ty] = pts[pts.length - 1];
+      ctx.beginPath();
+      ctx.arc(tx, ty, CELL * 0.13, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
 
     // 4) 格线
     ctx.strokeStyle = '#9ca3af';
